@@ -1,13 +1,15 @@
-objects = saturnd.o netlinkcom.o
+objects = saturnd.o netlinkcom.o md.o algsocket.o
 
 CC = gcc
-CPPFLAGS = -isystem /usr/include/libnl3
-LDLIBS = -lnl-3 -lnl-genl-3
+CPPFLAGS = -g -Wall -isystem /usr/include/libnl3 -std=c99
+LDLIBS = -lnl-3 -lnl-genl-3 -ludev
 
 saturnd: $(objects)
 
-saturnd.o: saturnd.c netlinkcom.h
-netlinkcom.o: netlinkcom.c netlinkcom.h
+algsocket.o: algsocket.c
+md.o: md.c algsocket.h md.h saturnd.h
+netlinkcom.o: netlinkcom.c netlinkcom.h md.h saturnd.h
+saturnd.o: saturnd.c netlinkcom.h algsocket.h
 
 clean:
 	rm -f *.o a.out

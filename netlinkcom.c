@@ -1,10 +1,13 @@
+#include <stdint.h>
+
+#include <sys/sysmacros.h>
+
 #include <netlink/socket.h>
 #include <netlink/genl/genl.h>
 #include <netlink/genl/mngt.h>
 
-#include <stdint.h>
-
 #include "netlinkcom.h"
+#include "md.h"
 
 enum {
     BTRFS_CSMM_C_UNSPEC,
@@ -12,6 +15,7 @@ enum {
     BTRFS_CSMM_C_GOODBYE,
     BTRFS_CSMM_C_ECHO,
     BTRFS_CSMM_C_MISMATCH,
+    BTRFS_CSMM_C_MISMATCH_PROCESSED,
     __BTRFS_CSMM_C_MAX,
 };
 
@@ -21,8 +25,10 @@ enum {
     BTRFS_CSMM_A_CSUM_ACTUAL,
     BTRFS_CSMM_A_CSUM_EXPECTED,
     BTRFS_CSMM_A_PHYS,
+    BTRFS_CSMM_A_LENGTH,
     BTRFS_CSMM_A_MAJOR,
     BTRFS_CSMM_A_MINOR,
+    BTRFS_CSMM_A_FIXED,
     __BTRFS_CSMM_A_MAX
 };
 
@@ -62,7 +68,7 @@ struct nl_sock* com_init() {
 
     struct nl_sock *sock = nl_socket_alloc();
     nl_socket_disable_seq_check(sock);
-    nl_socket_modify_cb(sock, NL_CB_VALID, NL_CB_CUSTOM, com_handle_valid_msg, NULL);
+    nl_socket_modify_cb(sock, NL_CB_VALID, NL_CB_CUSTOM, com_handle_valid_msg, sock);
     genl_connect(sock);
 
     err = genl_register_family(&myfam);
@@ -162,10 +168,42 @@ static int com_process_mismatch(struct nl_cache_ops *cops, struct genl_cmd *cmd,
     uint32_t csum_expected = nla_get_u32(info->attrs[BTRFS_CSMM_A_CSUM_EXPECTED]);
     unsigned int major = nla_get_u32(info->attrs[BTRFS_CSMM_A_MAJOR]);
     unsigned int minor = nla_get_u32(info->attrs[BTRFS_CSMM_A_MINOR]);
+    size_t len = nla_get_u64(info->attrs[BTRFS_CSMM_A_LENGTH]);
     printf("-----Mismatch-----\n");
     printf("phys: %lu\n", phys);
     printf("csum_actual: %u\n", csum_actual);
     printf("csum_expected: %u\n", csum_expected);
     printf("dev: %u:%u\n", major, minor);
-    return 0;
+
+    struct mddev mddev;
+    initmddev(makedev(major, minor), &mddev);
+    int rc = mdrepair(&mddev, phys, len, csum_actual, csum_expected);
+
+    /*struct stripe s;
+    uint64_t lsector = phys/512;
+    getStripe(lsector, &s);
+
+    printf("Sector: %lu\n", s.sector);
+    printf("dd_idx: %d\n", s.dd_idx);
+    printf("pd_idx: %d\n", s.pd_idx);
+    */
+
+    struct nl_msg *response = nlmsg_alloc();
+    void *head = genlmsg_put(response, NL_AUTO_PORT, NL_AUTO_SEQ, myfam.o_id, 0,
+                             0, BTRFS_CSMM_C_MISMATCH_PROCESSED, 1);
+    if(!head) {
+        printf("Failed to initialize message headers\n");
+        return 1;
+    }
+
+    if(rc == 0)
+        nla_put_flag(response, BTRFS_CSMM_A_FIXED);
+
+    int err = nl_send_sync((struct nl_sock *) ptr, response);
+    if(err) {
+        printf("send error: %s\n", nl_geterror(err));
+        return 1;
+    }
+
+    return NL_OK;
 }
